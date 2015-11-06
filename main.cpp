@@ -70,7 +70,7 @@ int main()
             for(int k = 0; k < 4; k++){
                 if((i+dy[k] < 0 || i+dy[k] >= N)||(j+dx[k] < 0 || j+dx[k] >= M)) continue;
                 double w;
-                w = norm(image.at<Vec3f>(i, j), image.at<Vec3f>(i+dy[k], j+dx[k]), NORM_INF);
+                w = norm(image.at<Vec3f>(i, j), image.at<Vec3f>(i+dy[k], j+dx[k]), NORM_INF); 
                 //Wij.insert(i*M+j, (i+dy[k])*M+j+dx[k]) = w;
                 w = exp(-(beta*w*w)/(sigma)) + eps;
                 WijTriplet.push_back(Triplet<double>(i*M+j, (i+dy[k])*M+j+dx[k], w));

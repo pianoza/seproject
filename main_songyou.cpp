@@ -1,8 +1,8 @@
 //
 //  main.cpp
+//  SparseMatrix2_xcode
 //
-//
-//  Created by Songyou Peng on 06/10/15.
+//  Created by Songyou Peng on 28/10/15.
 //  Copyright © 2015 Songyou Peng. All rights reserved.
 //
 
@@ -11,182 +11,158 @@
 #include <opencv2/highgui/highgui.hpp>
 #include <opencv2/imgproc/imgproc.hpp>
 #include <Eigen/Sparse>
-#include <Eigen/Dense>
 
-using namespace std;
-using namespace cv;
-using namespace Eigen;
+//using namespace cv;
+//using namespace Eigen;
 
+#define NUM_NEIGHBOR 4
 
 int main(int argc, const char * argv[]) {
-
-    Mat input, input_border, back_mask, fore_mask, output;
-    input = imread("/Users/Songyou/Desktop/Samples/lena.jpg");
-    imshow("input", input);
+    
+    
+    //Initialize input and output image.
+    cv::Mat input, back_mask, fore_mask, output;
+    input = cv::imread("/Users/Songyou/Desktop/Samples/test.jpg");//input image
+    cv::imshow("input", input);
     int height = input.rows;
     int width = input.cols;
     output = input;
+    input.convertTo(input, CV_64F);//Convert unsigned char(0-255) image to double so we can process easier.
     
-    SparseMatrix<double> A(height*width, height*width), W(height*width, height*width), D(height*width, height*width), Is(height*width, height*width), L(height*width, height*width);
-    A.setZero();
-    W.setZero();
-    D.setZero();
-    Is.setZero();
-    L.setZero();
+    back_mask = cv::imread("/Users/Songyou/Desktop/Samples/test_b.jpg", 0);//Input background mask
+    fore_mask = cv::imread("/Users/Songyou/Desktop/Samples/test_f.jpg", 0);//Input foreground mask
     
     
-    VectorXd b(height*width), x(height*width);
-    b.setZero();
-    x.setZero();
-    //A.coeffRef(1, 1) = exp(1);
-    //VectorXd b, x;
-    SparseLU<SparseMatrix<double>> solver;
-    //cout.precision(10);
-    //cout << A.rows() <<endl;
-    //cout << A.coeffRef(1, 1) <<endl;
-    //imshow("Baby",image1);
-    //waitKey(0);
     
-    Mat Weight_Matrix;//Initialize the weight matrix and Diagonal matrix, whose height and width are equal to the image's height*width
-    //Weight_Matrix = Mat::zeros(height*width, height*width, CV_64F);
-    //A = Mat::zeros(height*width, height*width, CV_64F);
-    //D = Mat::zeros(height*width, height*width, CV_64F);
-    //Is = Mat::zeros(height*width, height*width, CV_64F);
-    //L = Mat::zeros(height*width, height*width, CV_64F);
-    //b = Mat::zeros(height*width, 1, CV_64F);
-    //x = Mat::zeros(height*width, 1, CV_64F);
-    const float beta=1.0, epsilon = pow(10,-6);
-    float xb=100, xf=1;//background and foreground label
-    copyMakeBorder(input, input_border, 1, 1, 1, 1, BORDER_REPLICATE);//Adding borders to original image in order to process image easily
-    int height_border = input_border.rows;
-    int width_border = input_border.cols;
+    //Initialize Sparse Matrix relate matrices and vectors.
+    std::cout << "Start to initialize sparse matrix" << std::endl;
+    Eigen::SparseMatrix<double> A(height * width, height * width), W(height * width, height * width), D(height * width, height * width), Is(height * width, height * width), L(height * width, height * width);
+    A.setZero(); W.setZero(); D.setZero(); Is.setZero(); L.setZero();
     
-    back_mask = imread("/Users/Songyou/Desktop/Samples/b.jpg", 0);
-    fore_mask = imread("/Users/Songyou/Desktop/Samples/f.jpg", 0);
+    Eigen::VectorXd b(height * width), x(height * width);
+    b.setZero(); x.setZero();
     
-    for (int i = 1; i < (height_border-1); ++i)
+    //IMPORTANT! Reservation extremely increase the speed!
+    //Reserve a certain number of cell in every column of sparse matrix
+    W.reserve(Eigen::VectorXf::Constant(height * width, 4));
+    D.reserve(Eigen::VectorXf::Constant(height * width, 1));
+    Is.reserve(Eigen::VectorXf::Constant(height * width, 1));
+    L.reserve(Eigen::VectorXf::Constant(height * width , 5));
+    
+    std::cout << "Initialization of sparse matrix finished" << std::endl;
+    //double tmpSigma = -1000;
+    
+    //Initialize the variables that we will use in the segmentation process
+    const double beta = 0.1, epsilon = pow(10, -6);
+    const double xb = 3, xf = 1;//background and foreground label
+    double sigma = -1000.0;//Initialize sigma
+    int dy[NUM_NEIGHBOR] = {0,-1,0,1};//dy and dx represent the neighbor of a pixel
+    int dx[NUM_NEIGHBOR] = {-1,0,1,0};
+    
+    std::cout << "Start to calculate sigma" << std::endl;
+    for (int i = 0; i < height; ++i)
     {
-        for (int j = 1; j < (width_border-1); ++j)
+        for (int j = 0; j < width; ++j)
         {
-            int sigma = 0;
-            int max_in_3_channels[4] = {0};
-            int neighbor[12] = {0};
-            //            Mat c;
-            //            double max, min;
-            //            c = input(Rect(i-1,j-1,3,3));
-            //            minMaxIdx(c, &min, &max);
             
-            for (int t = 0; t < 3; ++t)//visit R G B 3 channels
+            cv::Mat neighbor(4, 1, CV_64FC1, cv::Scalar(0.0));
+            
+            for (int p = 0; p < NUM_NEIGHBOR; ++p)
             {
+                double tmpsigma = -1000;
+                if (i + dx[p] < 0 || i + dx[p] >= height || j + dy[p] < 0 || j + dy[p] >= width) continue;//Deal with border of image
                 
+                neighbor.at< double >(p) = norm(input.at< cv::Vec3d >(i, j), input.at< cv::Vec3d >(i + dx[p], j + dy[p]), cv::NORM_INF);
+                tmpsigma = norm(neighbor, cv::NORM_INF);
+                if(tmpsigma > sigma) sigma = tmpsigma;
+            }
+        }
+    }
+    std::cout << "sigma caulculation finished, sigma of the image is: " << sigma << std::endl << std::endl;;
+    
+    std::cout << "Start to calculate the Sparse matrix that we need" << std::endl << "......" << std::endl;;
+    for (int i = 0; i < height; ++i)
+    {
+        for (int j = 0; j < width; ++j)
+        {
+            
+            cv::Mat neighbor(4, 1, CV_64FC1, cv::Scalar(0.0));
+            
+            for (int p = 0; p < NUM_NEIGHBOR; ++p)
+            {
+                if (i + dx[p] < 0 || i + dx[p]>= height || j + dy[p]<0 || j + dy[p] >= width) continue;
                 
-                //4 neighbors in t th channels
-                neighbor[t*4+0] = abs(input_border.ptr<uchar>(i-1,j)[t]-input_border.ptr<uchar>(i,j)[t]);
-                //cout << neighbor[t*4+0]<<endl;
-                neighbor[t*4+1] = abs(input_border.ptr<uchar>(i,j-1)[t]-input_border.ptr<uchar>(i,j)[t]);
-                neighbor[t*4+2] = abs(input_border.ptr<uchar>(i+1,j)[t]-input_border.ptr<uchar>(i,j)[t]);
-                neighbor[t*4+3] = abs(input_border.ptr<uchar>(i,j+1)[t]-input_border.ptr<uchar>(i,j)[t]);
-                
+                neighbor.at< double >(p) = norm(input.at< cv::Vec3d >(i, j), input.at< cv::Vec3d >(i + dx[p], j + dy[p]), cv::NORM_INF);
                 
             }
             
-            for (int p=0; p < 3; ++p)//Acquire the max value in 3 channels of a pixel
+            //put value into W & D
+            for (int p = 0; p < NUM_NEIGHBOR; ++p)
             {
-                if(neighbor[p*4] >= max_in_3_channels[0])
-                    max_in_3_channels[0] = neighbor[p*4];
-                if(neighbor[p*4+1] >= max_in_3_channels[1])
-                    max_in_3_channels[1] = neighbor[p*4+1];
-                if(neighbor[p*4+2] >= max_in_3_channels[2])
-                    max_in_3_channels[2] = neighbor[p*4+2];
-                if(neighbor[p*4+3] >= max_in_3_channels[3])
-                    max_in_3_channels[3] = neighbor[p*4+3];
-            }
-            
-            for(int p=0; p<4;++p)
-            {
-                //Sigma is equal to the max value of the substraction with 4 neighbors in RGB 3 channels
-                if (max_in_3_channels[p] >= sigma)
-                    sigma=max_in_3_channels[p];
-            }
-            
-            
-            //Form weigth matrix, considering different situation of image border
-            //cout.precision(10);
-            //cout <<exp(-beta*float(max_in_3_channels[0])/float(sigma))+epsilon<<endl;
-            if (i > 1)
-            {
-                W.coeffRef((i-1)*height+(j-1),(i-2)*height+j-1) = exp(-beta*float(max_in_3_channels[0])*float(max_in_3_channels[0])/float(sigma))+epsilon;
-                D.coeffRef((i-1)*height+(j-1), (i-1)*height+(j-1)) += W.coeffRef((i-1)*height+(j-1),(i-2)*height+j-1);
-            }
-//            cout.precision(10);
-//            cout <<exp(-beta*float(max_in_3_channels[1])/float(sigma))+epsilon<<endl;
-            if (j > 1)
-            {
-                W.coeffRef((i-1)*height+(j-1),(i-1)*height+(j-2)) = exp(-beta*float(max_in_3_channels[1])*float(max_in_3_channels[1])/float(sigma))+epsilon;
-                D.coeffRef((i-1)*height+(j-1), (i-1)*height+(j-1)) += W.coeffRef((i-1)*height+(j-1),(i-1)*height+(j-2));
-            }
-            if (i < (height_border - 2) )
-            {
-                W.coeffRef((i-1)*height+(j-1),i*height+(j-1)) = exp(-beta*float(max_in_3_channels[2])*float(max_in_3_channels[2])/float(sigma))+epsilon;
-                D.coeffRef((i-1)*height+(j-1), (i-1)*height+(j-1)) += W.coeffRef((i-1)*height+(j-1),i*height+(j-1));
-            }
-            if (j < (width_border - 2))
-            {
-                W.coeffRef((i-1)*height+(j-1),(i-1)*height+j) = exp(-beta*float(max_in_3_channels[3])*float(max_in_3_channels[3])/float(sigma))+epsilon;
-                D.coeffRef((i-1)*height+(j-1), (i-1)*height+(j-1)) += W.coeffRef((i-1)*height+(j-1),(i-1)*height+j);
+                if (i + dx[p] < 0 || i + dx[p] >= height || j + dy[p]<0 || j + dy[p] >= width) continue;
+                W.coeffRef(i * width + j, (i + dx[p]) * width + j + dy[p]) = exp(-beta * neighbor.at< double >(p) * neighbor.at< double >(p) / sigma) + epsilon;
+                D.coeffRef(i * width + j, i * width + j) += W.coeffRef(i * width + j, (i + dx[p]) * width + j + dy[p]);
+                
             }
             
             
             /*********************************Form Seed relate matrix************************************************/
             
-            if ((int)fore_mask.at<uchar>(i-1,j-1) == 0)//When the pixel in fore mask is 0, then Is(i,i) = 1, b(i) = xf
+            if ((int)fore_mask.at<uchar>(i,j) < 100)//When the pixel in fore mask is 0, then Is(i,i) = 1, b(i) = xf
             {
-                Is.coeffRef((i-1)*height+(j-1), (i-1)*height+(j-1)) = 1.0;
-                b((i-1)*height+(j-1)) =xf;
+                Is.coeffRef(i * width + j, i * width + j) = 1.0;
+                b(i * width + j) =xf;
             }
             
-            if ((int)back_mask.at<uchar>(i-1,j-1) == 0)//When the pixel in back mask is 0, then Is(i,i) = 1, b(i) = xb
+            if ((int)back_mask.at<uchar>(i,j) < 100)//When the pixel in back mask is 0, then Is(i,i) = 1, b(i) = xb
             {
-                Is.coeffRef((i-1)*height+(j-1), (i-1)*height+(j-1)) = 1.0;
-                b((i-1)*height+(j-1)) =xb;
+                Is.coeffRef(i * width + j, i * width + j) = 1.0;
+                b(i * width + j) =xb;
+                
             }
+            
+            
+            
             
         }
     }
     
-    
     L = D - W;
+    //L = L*L;
     A = L * L + Is;
     
+    std::cout << "Calculation finished! Now solve linear system" << std::endl << std:: endl;
+    
+    //SparseLU<SparseMatrix<double>> solver;
+    //SimplicialLLT<SparseMatrix<double>> solver;
+    Eigen::SimplicialLDLT< Eigen::SparseMatrix<double> > solver;
+    
     solver.compute(A);
-    if(solver.info()!=Success)
-        exit(0);
+    if(solver.info()!=Eigen::Success)
+        std::cout << "bad" << std::endl;
     
     x = solver.solve(b);//Solve fomulation (7)
     
-    if(solver.info()!=Success)
+    if(solver.info() != Eigen::Success)
         exit(0);
-
-    for (int i =0; i<height*width; ++i)
+    
+    std::cout << "Soving successfully! Please look at the output." << std::endl;
+    //Try to find lobioa
+    for (int i = 0; i< height * width; ++i)
     {
-        if(x(i) >50)//it is background pixel
+        if(x(i) > ((xb + xf)/2))//it is background pixel
         {
-            int w = i % height;
-            int h = i / height;
-            output.ptr<uchar>(h,w)[0] = 0;
-            output.ptr<uchar>(h,w)[1] = 0;
-            output.ptr<uchar>(h,w)[2] = 0;
+            int w = i % width;
+            int h = i / width;
+            output.ptr< uchar >(h,w)[0] = 0;
+            output.ptr< uchar >(h,w)[1] = 0;
+            output.ptr< uchar >(h,w)[2] = 0;
         }
     }
     
-    imshow("output", output);
-    waitKey(0);
-        
+    cv::imshow("output", output);
+    cv::waitKey(0);
     
-//    
-//    cout.precision(10);
-//    for(int i = 0; i < height*width; ++i)
-//        cout << x(i) << endl;
-//        
+    
     return 0;
 }
